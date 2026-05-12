@@ -111,6 +111,10 @@ func OpenReadOnly(ctx context.Context, path string, opts OpenOptions) (*sql.DB, 
 	}
 	opts.ReadOnly = true
 	opts.WAL = false
+	// Mode has higher DSN precedence than ReadOnly. Force "ro" so a caller-
+	// supplied Mode (e.g. "rw", "rwc") cannot turn a read-only opener into a
+	// writable handle.
+	opts.Mode = "ro"
 	if opts.MaxOpenConns <= 0 {
 		opts.MaxOpenConns = DefaultReadMaxOpenConns
 	}

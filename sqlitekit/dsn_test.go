@@ -140,8 +140,18 @@ func TestDSN_MemoryPath(t *testing.T) {
 
 func TestDSN_FileMemoryPath(t *testing.T) {
 	dsn := DSN("file::memory:?cache=shared", DefaultOptions())
-	if !strings.HasPrefix(dsn, "file::memory:?cache=shared?") {
+	// Path already carries a "?cache=shared" query; sqlitekit must append
+	// further params with "&", not a second "?". Double-"?" would make modernc
+	// fold the rest of the query into cache=shared's value and silently drop
+	// the pragmas.
+	if !strings.HasPrefix(dsn, "file::memory:?cache=shared&") {
 		t.Fatalf("file memory path mismatch: %q", dsn)
+	}
+	if strings.Count(dsn, "?") != 1 {
+		t.Fatalf("file memory path must contain exactly one '?': %q", dsn)
+	}
+	if !strings.Contains(dsn, "journal_mode%28WAL%29") {
+		t.Fatalf("pragmas missing from file memory dsn: %q", dsn)
 	}
 }
 

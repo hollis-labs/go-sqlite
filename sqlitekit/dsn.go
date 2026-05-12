@@ -166,7 +166,11 @@ func DSN(path string, opts Options) string {
 		if raw == "" {
 			return path
 		}
-		return path + "?" + raw
+		sep := "?"
+		if strings.Contains(path, "?") {
+			sep = "&"
+		}
+		return path + sep + raw
 	}
 
 	if filepath.IsAbs(path) {

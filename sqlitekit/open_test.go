@@ -158,6 +158,35 @@ func TestOpenReadOnly_MissingFile(t *testing.T) {
 	}
 }
 
+func TestOpenReadOnly_OverridesCallerMode(t *testing.T) {
+	// A caller-supplied Mode like "rwc" must not turn OpenReadOnly into a
+	// writable handle. OpenReadOnly is contractually read-only.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.db")
+	ctx := context.Background()
+
+	writer, err := OpenSingle(ctx, path, OpenOptions{})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := writer.ExecContext(ctx, `CREATE TABLE t (id INTEGER)`); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	_ = writer.Close()
+
+	ro, err := OpenReadOnly(ctx, path, OpenOptions{
+		Options: Options{Mode: "rwc"},
+	})
+	if err != nil {
+		t.Fatalf("OpenReadOnly with caller Mode: %v", err)
+	}
+	defer ro.Close()
+
+	if _, err := ro.ExecContext(ctx, `INSERT INTO t (id) VALUES (1)`); err == nil {
+		t.Fatalf("OpenReadOnly accepted a write after caller supplied Mode=rwc")
+	}
+}
+
 func TestOpenReadOnly_RefusesWrites(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "app.db")
