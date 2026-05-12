@@ -333,6 +333,7 @@ Apps that keep a separate SQLite database for queued background work (telemetry,
 import (
     "github.com/hollis-labs/go-sqlite/sqlitekit"
     qsqlite "github.com/hollis-labs/go-queue/driver/sqlite"
+    _ "modernc.org/sqlite"
 )
 
 db, err := sqlitekit.OpenSingle(ctx, "queue.db", sqlitekit.OpenOptions{
@@ -341,6 +342,7 @@ db, err := sqlitekit.OpenSingle(ctx, "queue.db", sqlitekit.OpenOptions{
 if err != nil {
     return err
 }
+defer db.Close()
 q, err := qsqlite.New(db, qsqlite.Opts{})
 ```
 

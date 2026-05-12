@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-05-12
-- **Decision phase:** [Sprint pack — Task 04](https://github.com/hollis-labs/go-sqlite/blob/main/README.md), originated in `agent-workspaces/execution/shared-go/sqlite-concurrency/2026-05-12/`.
+- **Decision PR:** [#4](https://github.com/hollis-labs/go-sqlite/pull/4)
 
 ## Context
 
@@ -137,7 +137,9 @@ None of these are active concerns as of this ADR.
 
 ## References
 
-- Sprint pack: `agent-workspaces/execution/shared-go/sqlite-concurrency/2026-05-12/tasks/04-sqlitequeue.md`.
-- Reference implementations: Clockwork `internal/persistence/writequeue/writequeue.go`; Vanta `cmd/contextd/memory_subsystem.go`.
-- `go-queue` SQLite driver: `github.com/hollis-labs/go-queue/driver/sqlite`.
-- Relevant `go-sqlite` packages: `sqlitekit.OpenSingle`, `sqlitekit.OpenOptions`.
+- Decision PR: [#4](https://github.com/hollis-labs/go-sqlite/pull/4) — full
+  rationale and review thread.
+- `go-queue` SQLite driver:
+  [`github.com/hollis-labs/go-queue/driver/sqlite`](https://github.com/hollis-labs/go-queue/tree/main/driver/sqlite).
+- Relevant `go-sqlite` packages: `sqlitekit.OpenSingle`, `sqlitekit.OpenOptions`
+  ([`sqlitekit/open.go`](../../sqlitekit/open.go)).
