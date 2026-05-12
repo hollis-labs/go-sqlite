@@ -217,14 +217,14 @@ func TestBeginImmediate_DeferredComparison(t *testing.T) {
 	_ = tx2.Rollback()
 }
 
-func TestBegin_HonorsContextCancel(t *testing.T) {
+func TestBeginImmediate_HonorsContextCancel(t *testing.T) {
 	dir := t.TempDir()
 	db := openWriter(t, filepath.Join(dir, "app.db"))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := txutil.Begin(ctx, db, txutil.TxOptions{Immediate: true})
+	_, err := txutil.BeginImmediate(ctx, db)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}

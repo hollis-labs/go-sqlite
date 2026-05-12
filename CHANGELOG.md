@@ -9,23 +9,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - `txutil` package — explicit write transactions and lock-retry helpers.
-  - `TxOptions` (`Immediate`, `ReadOnly`).
-  - `Begin(ctx, db, opts)` / `BeginImmediate(ctx, db)` — open a transaction.
-    Requires the underlying `*sql.DB` to be opened with `_txlock=immediate`
-    on the DSN (`sqlitekit.WriterOptions` / `sqlitekit.OpenWriter` /
-    `sqlitekit.OpenSingle` with `TxLock="immediate"` already set this).
-  - `WithTx` / `WithImmediate` — closure form. Commits on `nil`, rolls back
-    on non-nil; panics propagate after rollback.
+  - `BeginImmediate(ctx, db)` — open a transaction. Contract marker for
+    the `_txlock=immediate` DSN requirement (set automatically by
+    `sqlitekit.WriterOptions` / `sqlitekit.OpenWriter` / `sqlitekit.OpenSingle`
+    constructed via `WriterOptions`).
+  - `WithImmediate(ctx, db, fn)` — closure form. Commits on `nil`, rolls
+    back on non-nil; panics propagate after rollback; commit failures
+    trigger rollback to release the connection.
   - `IsBusy`, `IsLocked`, `IsRetryableLock` — modernc `*sqlite.Error`
     classification covering primary and extended forms via `Code() & 0xff`.
-  - `RetryOptions` (`MaxAttempts`, `BaseDelay`, `MaxDelay`, `Jitter`,
-    `IsRetryable`) plus `WithRetry(ctx, opts, fn)` and
+  - `RetryOptions` (`MaxAttempts`, `BaseDelay`, `MaxDelay`, `Jitter`
+    opt-in, `IsRetryable`) plus `WithRetry(ctx, opts, fn)` and
     `WithImmediateRetry(ctx, db, opts, fn)` — bounded exponential backoff
     with optional jitter; `ctx.Done()` preempts the sleep.
   - `SavepointName(prefix)` — sanitized, process-unique SQLite-safe
     identifier. `WithSavepoint(ctx, tx, name, fn)` — release on success,
     rollback-to + release on error/panic without poisoning the outer
-    transaction.
+    transaction. Cleanup runs under `context.WithoutCancel(ctx)` so a
+    mid-`fn` cancellation does not orphan the savepoint.
   - Sentinels: `ErrInvalidSavepointName`.
 - `examples/inbox` — runnable demo of `txutil.WithImmediate` driving an
   atomic select-and-mark inbox claim (the Mux/Vanta/Nanite pattern).
@@ -60,8 +61,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `txutil` BEGIN IMMEDIATE behavior is proven by paired contention tests
   (`TestBeginImmediate_AcquiresWriterLockAtBeginTime` plus the deferred
   counter-example), the retry-recovery test, the
-  constraint-not-retried test, and the savepoint
-  rollback-does-not-poison-outer-tx test.
+  constraint-not-retried test, the savepoint
+  rollback-does-not-poison-outer-tx test, and the
+  cleanup-survives-ctx-cancel test that proves a cancelled inner ctx
+  does not orphan a savepoint.
 - Future packages (`serialwrite`, `sqlitequeue`) ship in their own phases;
   the module is versioned as a whole, so each phase produces a new `v0.x`
   tag with a CHANGELOG entry.

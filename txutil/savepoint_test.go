@@ -169,3 +169,63 @@ func TestWithSavepoint_InvalidName(t *testing.T) {
 		t.Fatalf("expected ErrInvalidSavepointName, got %v", err)
 	}
 }
+
+func TestWithSavepoint_CleanupSurvivesCtxCancel(t *testing.T) {
+	// If ctx is cancelled before/during fn, the SAVEPOINT cleanup statements
+	// must still run (via context.WithoutCancel) so the outer transaction is
+	// left in a usable state, not holding an orphan savepoint.
+	dir := t.TempDir()
+	db := openWriter(t, filepath.Join(dir, "app.db"))
+	createTable(t, db)
+
+	outer := context.Background()
+	err := txutil.WithImmediate(outer, db, func(tx *sql.Tx) error {
+		// Successful inner using the outer ctx — establishes the baseline.
+		if e := txutil.WithSavepoint(outer, tx, txutil.SavepointName("seed"), func() error {
+			_, err := tx.ExecContext(outer, `INSERT INTO items (name) VALUES (?)`, "seed")
+			return err
+		}); e != nil {
+			return e
+		}
+
+		// Cancelled inner: cleanup runs under WithoutCancel(ctx) so it
+		// succeeds even though ctx is dead.
+		innerCtx, cancel := context.WithCancel(outer)
+		cancel()
+		_ = txutil.WithSavepoint(innerCtx, tx, txutil.SavepointName("cancelled"), func() error {
+			_, _ = tx.ExecContext(innerCtx, `INSERT INTO items (name) VALUES (?)`, "should-not-survive")
+			return innerCtx.Err()
+		})
+
+		// Outer tx must still accept writes — the cancelled savepoint must
+		// have been ROLLBACK TO'd and RELEASE'd cleanly.
+		_, err := tx.ExecContext(outer, `INSERT INTO items (name) VALUES (?)`, "after_cancel")
+		return err
+	})
+	if err != nil {
+		t.Fatalf("outer WithImmediate: %v", err)
+	}
+
+	var names []string
+	rows, err := db.QueryContext(outer, `SELECT name FROM items ORDER BY id`)
+	if err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		names = append(names, s)
+	}
+	want := []string{"seed", "after_cancel"}
+	if len(names) != len(want) {
+		t.Fatalf("rows: got %v want %v", names, want)
+	}
+	for i, n := range names {
+		if n != want[i] {
+			t.Fatalf("rows[%d]: got %q want %q (all: %v)", i, n, want[i], names)
+		}
+	}
+}

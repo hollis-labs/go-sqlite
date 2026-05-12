@@ -208,13 +208,12 @@ Package `sqlitekit` (`github.com/hollis-labs/go-sqlite/sqlitekit`):
 
 Package `txutil` (`github.com/hollis-labs/go-sqlite/txutil`):
 
-- `TxOptions` — `Immediate`, `ReadOnly`.
-- `Begin(ctx, db, opts)` / `BeginImmediate(ctx, db)` — open a transaction.
-- `WithTx(ctx, db, opts, fn)` / `WithImmediate(ctx, db, fn)` — closure form. Commits on `nil`, rolls back on error/panic.
+- `BeginImmediate(ctx, db)` — open a transaction that begins with writer-lock acquisition. Contract marker for the `_txlock=immediate` DSN dependency.
+- `WithImmediate(ctx, db, fn)` — closure form. Commits on `nil`, rolls back on error/panic. Commit failures also trigger rollback to release the connection.
 - `IsBusy(err)` / `IsLocked(err)` / `IsRetryableLock(err)` — lock-error classifiers.
-- `RetryOptions` — `MaxAttempts`, `BaseDelay`, `MaxDelay`, `Jitter`, `IsRetryable`.
-- `WithRetry(ctx, opts, fn)` / `WithImmediateRetry(ctx, db, opts, fn)` — bounded exponential backoff with optional jitter.
-- `SavepointName(prefix)` / `WithSavepoint(ctx, tx, name, fn)` — savepoint helpers.
+- `RetryOptions` — `MaxAttempts`, `BaseDelay`, `MaxDelay`, `Jitter` (opt-in), `IsRetryable`.
+- `WithRetry(ctx, opts, fn)` / `WithImmediateRetry(ctx, db, opts, fn)` — bounded exponential backoff with optional jitter; `ctx.Done()` preempts the sleep.
+- `SavepointName(prefix)` / `WithSavepoint(ctx, tx, name, fn)` — savepoint helpers. Cleanup runs under `context.WithoutCancel(ctx)` so a mid-`fn` cancellation does not leave an orphan savepoint.
 - Sentinels: `ErrInvalidSavepointName`.
 
 ## Architecture notes

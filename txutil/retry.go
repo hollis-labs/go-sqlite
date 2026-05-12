@@ -10,7 +10,7 @@ import (
 // RetryOptions controls [WithRetry] and [WithImmediateRetry].
 //
 // Zero values use defaults: MaxAttempts=5, BaseDelay=1ms, MaxDelay=100ms,
-// Jitter=true, IsRetryable=IsRetryableLock.
+// Jitter=false (opt in via the field), IsRetryable=IsRetryableLock.
 type RetryOptions struct {
 	// MaxAttempts caps the total number of fn invocations. Must be at least 1.
 	MaxAttempts int
@@ -23,7 +23,8 @@ type RetryOptions struct {
 	MaxDelay time.Duration
 
 	// Jitter, when true, multiplies the computed delay by a random factor in
-	// [0.5, 1.5] to spread out concurrent retries.
+	// [0.5, 1.5) to spread out concurrent retries. Defaults to false (off);
+	// set to true to enable. Useful when many goroutines retry in lockstep.
 	Jitter bool
 
 	// IsRetryable classifies an error from fn. When nil, [IsRetryableLock] is

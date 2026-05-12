@@ -7,42 +7,37 @@ import (
 	"fmt"
 )
 
-// TxOptions configures a transaction.
-type TxOptions struct {
-	// Immediate requests BEGIN IMMEDIATE semantics. The *sql.DB must be opened
-	// with the modernc DSN parameter _txlock=immediate (see the package doc).
-	// If the DSN is not configured for immediate, BEGIN falls back to DEFERRED.
-	Immediate bool
-
-	// ReadOnly maps to sql.TxOptions.ReadOnly. SQLite/modernc does not strictly
-	// enforce this, but the hint is preserved so callers can document intent.
-	ReadOnly bool
-}
-
-// Begin opens a transaction with the given options.
+// BeginImmediate opens a transaction that begins with writer-lock acquisition.
 //
-// See [TxOptions] for the _txlock=immediate DSN requirement when Immediate is
-// true.
-func Begin(ctx context.Context, db *sql.DB, opts TxOptions) (*sql.Tx, error) {
-	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: opts.ReadOnly})
+// The actual BEGIN IMMEDIATE behavior is driven by the modernc DSN parameter
+// _txlock=immediate, not by this call. The *sql.DB must therefore be opened
+// with TxLock="immediate" (sqlitekit.WriterOptions / sqlitekit.OpenWriter /
+// sqlitekit.OpenSingle constructed via WriterOptions already set this). If
+// the DSN is not configured for immediate, modernc issues BEGIN DEFERRED and
+// writer-lock acquisition is delayed until the first write — which is the
+// exact failure mode this package exists to prevent.
+//
+// This function is a contract marker: when txutil.BeginImmediate appears in
+// code, the reader knows IMMEDIATE semantics are required at the DSN layer.
+func BeginImmediate(ctx context.Context, db *sql.DB) (*sql.Tx, error) {
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("txutil: begin: %w", err)
+		return nil, fmt.Errorf("txutil: begin immediate: %w", err)
 	}
 	return tx, nil
 }
 
-// BeginImmediate is shorthand for Begin with Immediate=true.
-func BeginImmediate(ctx context.Context, db *sql.DB) (*sql.Tx, error) {
-	return Begin(ctx, db, TxOptions{Immediate: true})
-}
-
-// WithTx runs fn inside a transaction. Commits on a nil return from fn,
-// rolls back otherwise. A panic in fn triggers a rollback and re-panics.
+// WithImmediate runs fn inside a transaction opened by [BeginImmediate].
 //
-// A rollback failure (other than sql.ErrTxDone) is reported alongside the
-// original error.
-func WithTx(ctx context.Context, db *sql.DB, opts TxOptions, fn func(*sql.Tx) error) (err error) {
-	tx, err := Begin(ctx, db, opts)
+// On a nil return from fn the transaction commits. On a non-nil return the
+// transaction rolls back and fn's error is returned. A panic inside fn
+// triggers rollback and re-raises the panic.
+//
+// If commit fails the helper attempts a rollback to release the connection
+// and reports the commit error. Rollback failures other than sql.ErrTxDone
+// are reported alongside the original error.
+func WithImmediate(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) (err error) {
+	tx, err := BeginImmediate(ctx, db)
 	if err != nil {
 		return err
 	}
@@ -59,13 +54,14 @@ func WithTx(ctx context.Context, db *sql.DB, opts TxOptions, fn func(*sql.Tx) er
 		}
 		return fnErr
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("txutil: commit: %w", err)
+	if commitErr := tx.Commit(); commitErr != nil {
+		// On a commit failure the transaction may still be holding the
+		// connection. Attempt rollback to release it; sql.ErrTxDone is
+		// expected when the driver already finalized the tx.
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			return fmt.Errorf("txutil: commit failed: %w (rollback also failed: %v)", commitErr, rbErr)
+		}
+		return fmt.Errorf("txutil: commit: %w", commitErr)
 	}
 	return nil
-}
-
-// WithImmediate is shorthand for WithTx with Immediate=true.
-func WithImmediate(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) error {
-	return WithTx(ctx, db, TxOptions{Immediate: true}, fn)
 }

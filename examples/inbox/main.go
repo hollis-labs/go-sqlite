@@ -112,7 +112,6 @@ func main() {
 		if err := rows.Err(); err != nil {
 			return err
 		}
-		rows.Close()
 
 		now := time.Now().UnixMilli()
 		for _, m := range claimed {

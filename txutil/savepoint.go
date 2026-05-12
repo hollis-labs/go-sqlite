@@ -17,8 +17,9 @@ var savepointCounter atomic.Uint64
 
 // SavepointName returns a SQLite-safe savepoint identifier of the form
 // "sp_<sanitized-prefix>_<counter>". The prefix is sanitized by lowercasing,
-// mapping non-identifier characters to '_', and collapsing trailing
-// underscores. An empty or fully-invalid prefix yields "sp_op_<counter>".
+// mapping non-identifier characters to '_', collapsing consecutive '_' into
+// a single '_', and trimming leading and trailing '_'. An empty or
+// fully-invalid prefix yields "sp_op_<counter>".
 //
 // The counter is process-global and monotonic, so concurrent calls with the
 // same prefix produce distinct names.
@@ -37,6 +38,11 @@ func SavepointName(prefix string) string {
 // panic, the savepoint is rolled back to and then released, leaving the outer
 // transaction intact for the caller to commit or roll back.
 //
+// Cleanup statements (ROLLBACK TO, RELEASE) run under a context derived from
+// ctx with cancellation stripped via [context.WithoutCancel]. If ctx is
+// cancelled or times out mid-fn, the savepoint still releases cleanly so the
+// outer transaction is not left with an orphan savepoint marker.
+//
 // name must be a valid SQLite identifier (letters, digits, underscores).
 // Use [SavepointName] to construct safe unique names.
 func WithSavepoint(ctx context.Context, tx *sql.Tx, name string, fn func() error) (err error) {
@@ -47,16 +53,17 @@ func WithSavepoint(ctx context.Context, tx *sql.Tx, name string, fn func() error
 		return fmt.Errorf("txutil: SAVEPOINT %s: %w", name, e)
 	}
 	defer func() {
+		cleanupCtx := context.WithoutCancel(ctx)
 		if p := recover(); p != nil {
-			_, _ = tx.ExecContext(ctx, "ROLLBACK TO SAVEPOINT "+name)
-			_, _ = tx.ExecContext(ctx, "RELEASE SAVEPOINT "+name)
+			_, _ = tx.ExecContext(cleanupCtx, "ROLLBACK TO SAVEPOINT "+name)
+			_, _ = tx.ExecContext(cleanupCtx, "RELEASE SAVEPOINT "+name)
 			panic(p)
 		}
 		if err != nil {
-			if _, rbErr := tx.ExecContext(ctx, "ROLLBACK TO SAVEPOINT "+name); rbErr != nil {
+			if _, rbErr := tx.ExecContext(cleanupCtx, "ROLLBACK TO SAVEPOINT "+name); rbErr != nil {
 				err = fmt.Errorf("%w; rollback to savepoint %s also failed: %v", err, name, rbErr)
 			}
-			if _, relErr := tx.ExecContext(ctx, "RELEASE SAVEPOINT "+name); relErr != nil {
+			if _, relErr := tx.ExecContext(cleanupCtx, "RELEASE SAVEPOINT "+name); relErr != nil {
 				err = fmt.Errorf("%w; release savepoint %s also failed: %v", err, name, relErr)
 			}
 		}
