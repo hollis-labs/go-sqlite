@@ -4,7 +4,9 @@ All notable changes to `go-sqlite` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.1.0 — 2026-05-12
+
+First public release.
 
 ### Decisions
 
@@ -102,6 +104,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`TestQueue_PanicInOpIsCaught`), shutdown drain
   (`TestQueue_StopDrainsAcceptedOps`), and ctx-cancel preemption at
   enqueue and ack waits.
-- Future packages (`sqlitequeue`) ship in their own phase; the module is
-  versioned as a whole, so each phase produces a new `v0.x` tag with a
-  CHANGELOG entry.
+- Future packages would ship as separate `v0.x` tags; the module is
+  versioned as a whole, so each adds a new CHANGELOG entry. No additional
+  packages are planned for `v0.1.x`.
