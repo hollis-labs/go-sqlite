@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Decisions
+
+- **`sqlitequeue` package deferred.** The proposed wrapper `OpenDB` would
+  be a one-line passthrough to `sqlitekit.OpenSingle`, and the optional
+  `go-queue` bridge would couple `go-sqlite` to `go-queue` for every
+  consumer of `sqlitekit` alone. Apps should open queue DBs with
+  `sqlitekit.OpenSingle` and hand the resulting `*sql.DB` to their queue
+  driver of choice (e.g. `go-queue/driver/sqlite.New`). See
+  [`docs/adr/0001-defer-sqlitequeue.md`](docs/adr/0001-defer-sqlitequeue.md).
+
 ### Added
 
 - `serialwrite` package — optional in-process write serializer.

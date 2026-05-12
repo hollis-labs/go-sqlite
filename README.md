@@ -4,7 +4,7 @@ SQLite concurrency toolkit for Go apps that use `database/sql` with [`modernc.or
 
 > "We enabled WAL and `busy_timeout`, but concurrent Go writers still hit `SQLITE_BUSY` / `SQLITE_LOCKED`."
 
-The module ships small, focused sub-packages. Today: `sqlitekit` (DSN + opener defaults), `txutil` (BEGIN IMMEDIATE / lock-retry / savepoints), and `serialwrite` (in-process serialized writer). A future release adds an optional `sqlitequeue` helper.
+The module ships small, focused sub-packages: `sqlitekit` (DSN + opener defaults), `txutil` (BEGIN IMMEDIATE / lock-retry / savepoints), and `serialwrite` (in-process serialized writer). A planned `sqlitequeue` helper has been deferred — see [ADR 0001](docs/adr/0001-defer-sqlitequeue.md) for the rationale and the recommended idiom for queue-DB openers.
 
 ## Status
 
@@ -325,12 +325,32 @@ go test -race ./...
 
 Tests use temporary directories and real SQLite databases via the pure-Go modernc driver, so no CGO toolchain or external SQLite install is required. No environment variables or fixtures.
 
+## Queue databases
+
+Apps that keep a separate SQLite database for queued background work (telemetry, embeddings, scheduled jobs) should open the queue DB with `sqlitekit.OpenSingle` and pass the resulting `*sql.DB` to whatever queue driver they use — for example [`hollis-labs/go-queue`](https://github.com/hollis-labs/go-queue):
+
+```go
+import (
+    "github.com/hollis-labs/go-sqlite/sqlitekit"
+    qsqlite "github.com/hollis-labs/go-queue/driver/sqlite"
+    _ "modernc.org/sqlite"
+)
+
+db, err := sqlitekit.OpenSingle(ctx, "queue.db", sqlitekit.OpenOptions{
+    CreateParentDir: true,
+})
+if err != nil {
+    return err
+}
+defer db.Close()
+q, err := qsqlite.New(db, qsqlite.Opts{})
+```
+
+A wrapper package (`sqlitequeue.OpenDB`) was proposed and deliberately deferred — it would be a one-line passthrough to `OpenSingle` and would not centralize any policy that `sqlitekit` does not already centralize. The optional `go-queue` bridge would also couple `go-sqlite` to `go-queue` for every consumer of `sqlitekit` alone. See [ADR 0001](docs/adr/0001-defer-sqlitequeue.md) for the full reasoning and the revisit conditions.
+
 ## Roadmap
 
-Upcoming:
-
-- `sqlitequeue` — optional helper for opening a separate queue DB (or an ADR explaining why the existing openers are enough).
-- `v0.1.0` release once the next phase lands.
+- `v0.1.0` release as the next milestone — the public surface across `sqlitekit`, `txutil`, and `serialwrite` is stable.
 
 See [`CHANGELOG.md`](CHANGELOG.md) for what landed in each release.
 
