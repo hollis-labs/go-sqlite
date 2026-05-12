@@ -1,0 +1,132 @@
+package serialwrite
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"sync/atomic"
+	"time"
+
+	"github.com/hollis-labs/go-sqlite/txutil"
+)
+
+// Op is the function signature for a unit of work submitted to a [Writer].
+// It runs inside a SAVEPOINT on a BEGIN IMMEDIATE transaction. A non-nil
+// return rolls back the savepoint only; other ops in the same batch
+// (Queue mode) may still commit.
+//
+// The ctx passed to fn drives the underlying transaction. The two writer
+// implementations differ in which ctx that is:
+//
+//   - [Queue]: the worker's Run ctx. Cancelling the caller's Submit ctx
+//     stops the caller from waiting for the ack but does not abort an
+//     in-flight op.
+//
+//   - [Direct]: the caller's Submit ctx. Direct runs synchronously on the
+//     caller's goroutine and has no worker ctx.
+type Op func(ctx context.Context, tx *sql.Tx) error
+
+// Writer is the contract implemented by both [Queue] and [Direct].
+type Writer interface {
+	// Submit blocks until fn acknowledges completion, the caller's ctx is
+	// cancelled, or the writer is stopped.
+	//
+	// For [Queue], cancelling the caller's ctx stops the wait but does not
+	// abort an in-flight op — the op may still commit. See [Queue.Submit].
+	Submit(ctx context.Context, name string, fn Op) error
+
+	// Stats returns a snapshot of cumulative counters. Safe to call
+	// concurrently with Submit.
+	Stats() Stats
+}
+
+// Options configures a [Queue] or [Direct] writer.
+//
+// Zero values use defaults: QueueSize=256, MaxBatch=32, BatchWindow=2ms,
+// Retry=nil (no retry).
+type Options struct {
+	// QueueSize caps the in-flight queue depth (Queue mode only). Submitters
+	// block when full; the channel acts as backpressure.
+	QueueSize int
+
+	// MaxBatch caps the number of ops the worker bundles into one outer
+	// BEGIN IMMEDIATE transaction. Higher values amortize fsync cost; lower
+	// values reduce tail latency.
+	MaxBatch int
+
+	// BatchWindow is the maximum time the worker waits for additional ops
+	// after seeing the first one of a batch.
+	BatchWindow time.Duration
+
+	// Retry, when non-nil, wraps each transaction in [txutil.WithRetry] so
+	// transient lock errors (SQLITE_BUSY, SQLITE_LOCKED) are retried before
+	// failing the batch. nil disables retry entirely; pass a non-nil pointer
+	// (even &txutil.RetryOptions{}) to opt in. The pointer form makes opt-in
+	// unambiguous regardless of which RetryOptions fields the caller sets.
+	//
+	// The in-process serializer rarely needs retry — concurrent writers go
+	// through the single worker, so SQLITE_BUSY only arises from another
+	// process holding the file lock. Configure Retry when sharing the DB
+	// file across processes (e.g., daemon + MCP server).
+	Retry *txutil.RetryOptions
+}
+
+// Stats is a snapshot of cumulative counters for a [Writer].
+type Stats struct {
+	// Submitted is the total number of Submit calls observed.
+	Submitted int64
+	// Completed is the number of Submit calls that returned nil.
+	Completed int64
+	// Failed is the number of Submit calls that returned a non-nil error
+	// (including context cancellations and writer-stopped errors).
+	Failed int64
+	// Batches is the number of outer BEGIN IMMEDIATE transactions the
+	// worker has executed.
+	Batches int64
+	// OpsInBatches is the total number of ops the worker has processed
+	// across all batches.
+	OpsInBatches int64
+	// LastBatchSize is the size of the most recent batch.
+	LastBatchSize int64
+	// QueueDepth is the current channel-buffered queue depth (Queue mode).
+	// Direct mode reports zero.
+	QueueDepth int64
+}
+
+// ErrWriterStopped is returned by [Queue.Submit] when the writer is stopped
+// before the op can be enqueued.
+var ErrWriterStopped = errors.New("serialwrite: writer stopped")
+
+type counters struct {
+	submitted     atomic.Int64
+	completed     atomic.Int64
+	failed        atomic.Int64
+	batches       atomic.Int64
+	opsInBatches  atomic.Int64
+	lastBatchSize atomic.Int64
+}
+
+func (c *counters) snapshot(queueDepth int64) Stats {
+	return Stats{
+		Submitted:     c.submitted.Load(),
+		Completed:     c.completed.Load(),
+		Failed:        c.failed.Load(),
+		Batches:       c.batches.Load(),
+		OpsInBatches:  c.opsInBatches.Load(),
+		LastBatchSize: c.lastBatchSize.Load(),
+		QueueDepth:    queueDepth,
+	}
+}
+
+func applyOptionDefaults(opts Options) Options {
+	if opts.QueueSize <= 0 {
+		opts.QueueSize = 256
+	}
+	if opts.MaxBatch <= 0 {
+		opts.MaxBatch = 32
+	}
+	if opts.BatchWindow <= 0 {
+		opts.BatchWindow = 2 * time.Millisecond
+	}
+	return opts
+}

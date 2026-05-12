@@ -8,6 +8,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `serialwrite` package — optional in-process write serializer.
+  - `Op` — `func(ctx, *sql.Tx) error`. Runs inside a SAVEPOINT on the
+    worker's BEGIN IMMEDIATE transaction so a single failing op does not
+    invalidate sibling ops in the same batch.
+  - `Writer` — interface implemented by both `Queue` and `Direct`
+    (`Submit(ctx, name, fn) error`, `Stats() Stats`).
+  - `Options` — `QueueSize` (default 256), `MaxBatch` (default 32),
+    `BatchWindow` (default 2ms), `Retry` (`*txutil.RetryOptions`; `nil`
+    disables retry — pass a non-nil pointer to opt in).
+  - `Stats` — `Submitted`, `Completed`, `Failed`, `Batches`,
+    `OpsInBatches`, `LastBatchSize`, `QueueDepth`. Safe to call
+    concurrently.
+  - `New(db, opts) *Queue` — batching worker. Call `Run(ctx)` in a
+    goroutine; `Stop()` + `Wait()` for orderly drain. Panics in an op are
+    caught, attributed to that op's error, and the worker keeps running.
+  - `NewDirect(db, opts) *Direct` — synchronous, no goroutine. Useful for
+    tests and apps that want the `Writer` interface without lifecycle
+    management.
+  - Sentinels: `ErrWriterStopped`.
+- `examples/serialwrite` — runnable demo of `serialwrite.Queue` batching
+  20 concurrent producers (200 inserts) through one transaction owner.
 - `txutil` package — explicit write transactions and lock-retry helpers.
   - `BeginImmediate(ctx, db)` — open a transaction. Contract marker for
     the `_txlock=immediate` DSN requirement (set automatically by
@@ -65,6 +86,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   rollback-does-not-poison-outer-tx test, and the
   cleanup-survives-ctx-cancel test that proves a cancelled inner ctx
   does not orphan a savepoint.
-- Future packages (`serialwrite`, `sqlitequeue`) ship in their own phases;
-  the module is versioned as a whole, so each phase produces a new `v0.x`
-  tag with a CHANGELOG entry.
+- `serialwrite` behavior is proven by 16-goroutine × 25-insert fan-out
+  (`TestQueue_ConcurrentSubmitsCommit`), savepoint isolation
+  (`TestQueue_FailedOpRollsBackOnlyItsSavepoint`), panic recovery
+  (`TestQueue_PanicInOpIsCaught`), shutdown drain
+  (`TestQueue_StopDrainsAcceptedOps`), and ctx-cancel preemption at
+  enqueue and ack waits.
+- Future packages (`sqlitequeue`) ship in their own phase; the module is
+  versioned as a whole, so each phase produces a new `v0.x` tag with a
+  CHANGELOG entry.
