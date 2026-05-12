@@ -7,6 +7,9 @@
 //   - txutil:      BEGIN IMMEDIATE / lock classification / retry / savepoints.
 //   - serialwrite: in-process write serializer with batching and savepoints.
 //
-// A future release adds an optional sqlitequeue helper. See README.md for
-// the package landscape.
+// A proposed sqlitequeue wrapper was deferred — apps should open queue DBs
+// with sqlitekit.OpenSingle and pass the *sql.DB to their queue driver of
+// choice. See docs/adr/0001-defer-sqlitequeue.md for the rationale.
+//
+// See README.md for the package landscape and usage patterns.
 package gosqlite
