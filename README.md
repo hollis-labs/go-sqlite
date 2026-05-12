@@ -4,7 +4,7 @@ SQLite concurrency toolkit for Go apps that use `database/sql` with [`modernc.or
 
 > "We enabled WAL and `busy_timeout`, but concurrent Go writers still hit `SQLITE_BUSY` / `SQLITE_LOCKED`."
 
-The module ships small, focused sub-packages. Today: `sqlitekit` (DSN + opener defaults) and `txutil` (BEGIN IMMEDIATE / lock-retry / savepoints). Future releases add `serialwrite` (in-process serialized writer) and an optional `sqlitequeue` helper.
+The module ships small, focused sub-packages. Today: `sqlitekit` (DSN + opener defaults), `txutil` (BEGIN IMMEDIATE / lock-retry / savepoints), and `serialwrite` (in-process serialized writer). A future release adds an optional `sqlitequeue` helper.
 
 ## Status
 
@@ -189,6 +189,53 @@ err := txutil.WithImmediate(ctx, db, func(tx *sql.Tx) error {
 
 `SavepointName` returns a sanitized, process-unique identifier. `WithSavepoint` releases on success or rolls back to and releases on failure, leaving the outer transaction usable.
 
+## serialwrite
+
+`serialwrite` is an optional in-process serializer for apps that want to keep a separate read pool open while routing correctness-critical writes through one transaction owner. It batches submitted ops into one BEGIN IMMEDIATE transaction, with a SAVEPOINT per op so a single failure does not invalidate sibling ops.
+
+```go
+import (
+    "github.com/hollis-labs/go-sqlite/serialwrite"
+    "github.com/hollis-labs/go-sqlite/sqlitekit"
+)
+
+writer := sqlitekit.OpenWriter(...) // _txlock=immediate
+q := serialwrite.New(writer, serialwrite.Options{
+    QueueSize:   256,
+    MaxBatch:    32,
+    BatchWindow: 2 * time.Millisecond,
+})
+
+ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
+go func() {
+    if err := q.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+        log.Printf("serialwrite worker: %v", err)
+    }
+}()
+
+err := q.Submit(ctx, "append_event", func(ctx context.Context, tx *sql.Tx) error {
+    _, err := tx.ExecContext(ctx,
+        `INSERT INTO events (type, payload) VALUES (?, ?)`, typ, payload)
+    return err
+})
+
+// Orderly shutdown — Stop signals the worker, Wait blocks until it has
+// drained accepted ops.
+q.Stop()
+q.Wait()
+```
+
+Submit blocks until the op has committed or failed. The caller's ctx applies only to the enqueue and result-wait paths; the op runs under the worker's run context.
+
+For tests and apps that want the `Writer` interface without managing a goroutine, `serialwrite.NewDirect(db, opts)` returns a synchronous implementation that runs each op in its own transaction.
+
+**When *not* to use serialwrite:**
+
+- Low-write apps: `sqlitekit.OpenSingle` + `txutil.WithImmediate` are enough.
+- Durable background work / queued retries across process restarts: use a persistent queue (e.g. [`hollis-labs/go-queue`](https://github.com/hollis-labs/go-queue)).
+- Cross-process serialization: `serialwrite` only serializes within one Go process.
+
 ## API Overview
 
 Package `sqlitekit` (`github.com/hollis-labs/go-sqlite/sqlitekit`):
@@ -216,6 +263,16 @@ Package `txutil` (`github.com/hollis-labs/go-sqlite/txutil`):
 - `SavepointName(prefix)` / `WithSavepoint(ctx, tx, name, fn)` — savepoint helpers. Cleanup runs under `context.WithoutCancel(ctx)` so a mid-`fn` cancellation does not leave an orphan savepoint.
 - Sentinels: `ErrInvalidSavepointName`.
 
+Package `serialwrite` (`github.com/hollis-labs/go-sqlite/serialwrite`):
+
+- `Op` — `func(ctx context.Context, tx *sql.Tx) error`. Runs inside a SAVEPOINT on the worker's BEGIN IMMEDIATE transaction.
+- `Writer` — interface implemented by both `Queue` and `Direct`. Methods: `Submit(ctx, name, fn) error`, `Stats() Stats`.
+- `Options` — `QueueSize`, `MaxBatch`, `BatchWindow`, `Retry`.
+- `Stats` — `Submitted`, `Completed`, `Failed`, `Batches`, `OpsInBatches`, `LastBatchSize`, `QueueDepth`.
+- `New(db, opts)` — construct a batching `*Queue`. Call `Run` in a goroutine; use `Stop` + `Wait` for shutdown.
+- `NewDirect(db, opts)` — construct a synchronous `*Direct` writer (no goroutine).
+- Sentinels: `ErrWriterStopped`.
+
 ## Architecture notes
 
 **WAL ≠ concurrent writes.** WAL allows readers to proceed against the last consistent snapshot while a writer is active, but only one writer holds the database lock at a time. Two Go goroutines doing `BEGIN; INSERT; COMMIT` against separate pool connections still race for the writer lock, and the loser gets `SQLITE_BUSY` once `busy_timeout` expires.
@@ -235,6 +292,7 @@ Runnable end-to-end examples live in [`examples/`](examples/):
 - [`examples/single`](examples/single) — `OpenSingle` with a small write+read loop.
 - [`examples/split`](examples/split) — `OpenWriter` + `OpenReader` with concurrent fan-out writers.
 - [`examples/inbox`](examples/inbox) — `txutil.WithImmediate` driving an atomic select-and-mark inbox claim.
+- [`examples/serialwrite`](examples/serialwrite) — `serialwrite.Queue` batching 20 concurrent producers into one transaction owner.
 
 Run from the repo root:
 
@@ -242,6 +300,7 @@ Run from the repo root:
 go run ./examples/single
 go run ./examples/split
 go run ./examples/inbox
+go run ./examples/serialwrite
 ```
 
 ## Testing
@@ -255,10 +314,10 @@ Tests use temporary directories and real SQLite databases via the pure-Go modern
 
 ## Roadmap
 
-Upcoming packages:
+Upcoming:
 
-- `serialwrite` — optional in-process serialized writer with batching/savepoints, for hot-write paths that benefit from coalescing.
 - `sqlitequeue` — optional helper for opening a separate queue DB (or an ADR explaining why the existing openers are enough).
+- `v0.1.0` release once the next phase lands.
 
 See [`CHANGELOG.md`](CHANGELOG.md) for what landed in each release.
 
