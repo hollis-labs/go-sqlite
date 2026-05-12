@@ -24,7 +24,7 @@ type Queue struct {
 	ops         chan op
 	maxBatch    int
 	batchWindow time.Duration
-	retry       txutil.RetryOptions
+	retry       *txutil.RetryOptions
 	stats       counters
 
 	stopOnce sync.Once
@@ -91,10 +91,27 @@ func (q *Queue) Wait() {
 //
 // Returns [ErrWriterStopped] if the writer has stopped, ctx.Err() if ctx is
 // cancelled, or the op's error otherwise.
+//
+// Submit-after-Stop semantics: a Submit call that races with [Stop] always
+// resolves to ErrWriterStopped. Submit must be paired with a running [Run];
+// calling Submit without ever starting Run is undefined.
 func (q *Queue) Submit(ctx context.Context, name string, fn Op) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
+	// Pre-check: if Stop was called before this Submit, fail fast. This makes
+	// Submit-after-Stop deterministic; without the pre-check, Go's select
+	// could non-deterministically pick the q.ops case even when stopCh is
+	// already closed, leading to an enqueued op that may never be processed.
+	select {
+	case <-q.stopCh:
+		q.stats.submitted.Add(1)
+		q.stats.failed.Add(1)
+		return ErrWriterStopped
+	default:
+	}
+
 	item := op{
 		name: name,
 		fn:   fn,
@@ -120,6 +137,22 @@ func (q *Queue) Submit(ctx context.Context, name string, fn Op) error {
 			q.stats.completed.Add(1)
 		}
 		return err
+	case <-q.doneCh:
+		// Run exited before our op finished. Drain may have processed us in
+		// the very last moment before exit; the buffered res channel holds
+		// any such late result.
+		select {
+		case err := <-item.res:
+			if err != nil {
+				q.stats.failed.Add(1)
+			} else {
+				q.stats.completed.Add(1)
+			}
+			return err
+		default:
+			q.stats.failed.Add(1)
+			return ErrWriterStopped
+		}
 	case <-ctx.Done():
 		q.stats.failed.Add(1)
 		return ctx.Err()
@@ -200,8 +233,8 @@ func (q *Queue) runBatch(ctx context.Context, batch []op, results []error) error
 			return nil
 		})
 	}
-	if q.retry.MaxAttempts > 0 {
-		return txutil.WithRetry(ctx, q.retry, runOnce)
+	if q.retry != nil {
+		return txutil.WithRetry(ctx, *q.retry, runOnce)
 	}
 	return runOnce()
 }

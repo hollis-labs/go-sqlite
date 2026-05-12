@@ -11,17 +11,28 @@ import (
 )
 
 // Op is the function signature for a unit of work submitted to a [Writer].
-// It runs inside a SAVEPOINT on the worker's BEGIN IMMEDIATE transaction.
-// A non-nil return rolls back the savepoint only; other ops in the same
-// batch may still commit.
+// It runs inside a SAVEPOINT on a BEGIN IMMEDIATE transaction. A non-nil
+// return rolls back the savepoint only; other ops in the same batch
+// (Queue mode) may still commit.
 //
-// The ctx passed to the op is the worker's run context, not the caller's
-// Submit context. The caller's ctx only controls enqueue and result waiting.
+// The ctx passed to fn drives the underlying transaction. The two writer
+// implementations differ in which ctx that is:
+//
+//   - [Queue]: the worker's Run ctx. Cancelling the caller's Submit ctx
+//     stops the caller from waiting for the ack but does not abort an
+//     in-flight op.
+//
+//   - [Direct]: the caller's Submit ctx. Direct runs synchronously on the
+//     caller's goroutine and has no worker ctx.
 type Op func(ctx context.Context, tx *sql.Tx) error
 
 // Writer is the contract implemented by both [Queue] and [Direct].
 type Writer interface {
-	// Submit blocks until fn has committed or failed.
+	// Submit blocks until fn acknowledges completion, the caller's ctx is
+	// cancelled, or the writer is stopped.
+	//
+	// For [Queue], cancelling the caller's ctx stops the wait but does not
+	// abort an in-flight op — the op may still commit. See [Queue.Submit].
 	Submit(ctx context.Context, name string, fn Op) error
 
 	// Stats returns a snapshot of cumulative counters. Safe to call
@@ -31,9 +42,8 @@ type Writer interface {
 
 // Options configures a [Queue] or [Direct] writer.
 //
-// Zero values use defaults: QueueSize=256, MaxBatch=32, BatchWindow=2ms.
-// Retry is the zero RetryOptions, which disables retry; pass a non-zero
-// RetryOptions to opt in.
+// Zero values use defaults: QueueSize=256, MaxBatch=32, BatchWindow=2ms,
+// Retry=nil (no retry).
 type Options struct {
 	// QueueSize caps the in-flight queue depth (Queue mode only). Submitters
 	// block when full; the channel acts as backpressure.
@@ -48,11 +58,17 @@ type Options struct {
 	// after seeing the first one of a batch.
 	BatchWindow time.Duration
 
-	// Retry, when non-zero, wraps each transaction in
-	// [txutil.WithRetry] so transient lock errors (SQLITE_BUSY,
-	// SQLITE_LOCKED) are retried before failing the batch. Defaults to
-	// no retry; the in-process serializer rarely needs it.
-	Retry txutil.RetryOptions
+	// Retry, when non-nil, wraps each transaction in [txutil.WithRetry] so
+	// transient lock errors (SQLITE_BUSY, SQLITE_LOCKED) are retried before
+	// failing the batch. nil disables retry entirely; pass a non-nil pointer
+	// (even &txutil.RetryOptions{}) to opt in. The pointer form makes opt-in
+	// unambiguous regardless of which RetryOptions fields the caller sets.
+	//
+	// The in-process serializer rarely needs retry — concurrent writers go
+	// through the single worker, so SQLITE_BUSY only arises from another
+	// process holding the file lock. Configure Retry when sharing the DB
+	// file across processes (e.g., daemon + MCP server).
+	Retry *txutil.RetryOptions
 }
 
 // Stats is a snapshot of cumulative counters for a [Writer].

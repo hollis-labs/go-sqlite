@@ -328,6 +328,75 @@ func TestQueue_SubmitAfterStopReturnsErrWriterStopped(t *testing.T) {
 	}
 }
 
+func TestQueue_SubmitAfterStopIsDeterministic(t *testing.T) {
+	// Without the Submit pre-check, Go's select could non-deterministically
+	// pick the q.ops <- item case even when stopCh is closed, enqueueing an
+	// op that never gets processed (and leaving Submit blocked forever
+	// waiting on item.res). Run a tight loop to flush out the race.
+	db := openWriter(t, "app.db")
+
+	for i := 0; i < 100; i++ {
+		q := serialwrite.New(db, serialwrite.Options{})
+		q.Stop()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		err := q.Submit(ctx, "late", func(ctx context.Context, tx *sql.Tx) error { return nil })
+		cancel()
+		if !errors.Is(err, serialwrite.ErrWriterStopped) {
+			t.Fatalf("iteration %d: expected ErrWriterStopped, got %v", i, err)
+		}
+	}
+}
+
+func TestQueue_SubmitDoesNotHangAfterRunExit(t *testing.T) {
+	// Race-trigger: many Submit goroutines and Stop fire concurrently. Some
+	// Submits will land before Stop; some will race with Stop and possibly
+	// enqueue after Run has decided to drain-and-exit. None must hang —
+	// they should either return successfully (drained) or with
+	// ErrWriterStopped / context.Canceled.
+	db := openWriter(t, "app.db")
+	q := serialwrite.New(db, serialwrite.Options{
+		MaxBatch:    4,
+		BatchWindow: time.Millisecond,
+	})
+	runQueue(t, q)
+
+	const n = 50
+	var wg sync.WaitGroup
+	results := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			results[i] = q.Submit(ctx, "race", func(ctx context.Context, tx *sql.Tx) error {
+				_, e := tx.ExecContext(ctx, `INSERT INTO events (name, payload) VALUES (?, ?)`, uniq(99, i), "p")
+				return e
+			})
+		}(i)
+	}
+	// Stop while submitters are in flight.
+	time.Sleep(2 * time.Millisecond)
+	q.Stop()
+	q.Wait()
+	wg.Wait()
+
+	// Every Submit must have returned; none should be context.DeadlineExceeded
+	// (which would indicate a hang).
+	for i, err := range results {
+		if err == nil {
+			continue
+		}
+		if errors.Is(err, serialwrite.ErrWriterStopped) {
+			continue
+		}
+		if errors.Is(err, context.Canceled) {
+			continue
+		}
+		t.Fatalf("Submit %d returned unexpected error (possible hang): %v", i, err)
+	}
+}
+
 func TestQueue_RunReturnsCtxErrOnCancel(t *testing.T) {
 	db := openWriter(t, "app.db")
 	q := serialwrite.New(db, serialwrite.Options{})

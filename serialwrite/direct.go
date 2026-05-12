@@ -11,37 +11,47 @@ import (
 // in its own BEGIN IMMEDIATE transaction. Useful for tests and for apps
 // that want the [Writer] interface without managing a goroutine.
 //
-// Direct does not need Run / Stop / Wait. Stats reports the same counters
-// as [Queue] for parity; LastBatchSize is always 1 and QueueDepth is always
-// 0.
+// Direct does not need Run / Stop / Wait. Stats reports the same counter
+// shape as [Queue]: every Submit counts as one batch with one op, regardless
+// of whether the op succeeded. LastBatchSize is always 1; QueueDepth is
+// always 0.
 type Direct struct {
 	db    *sql.DB
-	retry txutil.RetryOptions
+	retry *txutil.RetryOptions
 	stats counters
 }
 
 // NewDirect constructs a [Direct] writer over db.
 //
-// The QueueSize / MaxBatch / BatchWindow options are ignored. Only
-// Options.Retry is honored.
+// QueueSize / MaxBatch / BatchWindow are ignored. Only Options.Retry is
+// honored.
 func NewDirect(db *sql.DB, opts Options) *Direct {
 	return &Direct{db: db, retry: opts.Retry}
 }
 
 // Submit runs fn synchronously in a BEGIN IMMEDIATE transaction. Returns the
 // op's error or, if Options.Retry was set, the final error after retry.
+//
+// Unlike [Queue.Submit], the ctx passed to fn is the caller's Submit ctx —
+// Direct has no worker.
 func (d *Direct) Submit(ctx context.Context, name string, fn Op) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	d.stats.submitted.Add(1)
+	// Every Submit is one batch of one op for stats parity with Queue. We
+	// record this before the op runs so a failed op still increments
+	// Batches / OpsInBatches / LastBatchSize.
+	d.stats.batches.Add(1)
+	d.stats.opsInBatches.Add(1)
+	d.stats.lastBatchSize.Store(1)
 
 	run := func(tx *sql.Tx) error {
 		return fn(ctx, tx)
 	}
 	var err error
-	if d.retry.MaxAttempts > 0 {
-		err = txutil.WithImmediateRetry(ctx, d.db, d.retry, run)
+	if d.retry != nil {
+		err = txutil.WithImmediateRetry(ctx, d.db, *d.retry, run)
 	} else {
 		err = txutil.WithImmediate(ctx, d.db, run)
 	}
@@ -50,9 +60,6 @@ func (d *Direct) Submit(ctx context.Context, name string, fn Op) error {
 		return err
 	}
 	d.stats.completed.Add(1)
-	d.stats.batches.Add(1)
-	d.stats.opsInBatches.Add(1)
-	d.stats.lastBatchSize.Store(1)
 	_ = name // reserved for symmetry with Queue.Submit; not currently used.
 	return nil
 }

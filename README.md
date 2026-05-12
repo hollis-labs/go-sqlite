@@ -195,30 +195,43 @@ err := txutil.WithImmediate(ctx, db, func(tx *sql.Tx) error {
 
 ```go
 import (
+    "context"
+    "errors"
+    "log"
+    "time"
+
     "github.com/hollis-labs/go-sqlite/serialwrite"
     "github.com/hollis-labs/go-sqlite/sqlitekit"
 )
 
-writer := sqlitekit.OpenWriter(...) // _txlock=immediate
-q := serialwrite.New(writer, serialwrite.Options{
+ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
+
+db, err := sqlitekit.OpenWriter(ctx, "app.db", sqlitekit.OpenOptions{})
+if err != nil {
+    log.Fatalf("open writer: %v", err)
+}
+defer db.Close()
+
+q := serialwrite.New(db, serialwrite.Options{
     QueueSize:   256,
     MaxBatch:    32,
     BatchWindow: 2 * time.Millisecond,
 })
 
-ctx, cancel := context.WithCancel(context.Background())
-defer cancel()
 go func() {
     if err := q.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
         log.Printf("serialwrite worker: %v", err)
     }
 }()
 
-err := q.Submit(ctx, "append_event", func(ctx context.Context, tx *sql.Tx) error {
+if err := q.Submit(ctx, "append_event", func(ctx context.Context, tx *sql.Tx) error {
     _, err := tx.ExecContext(ctx,
         `INSERT INTO events (type, payload) VALUES (?, ?)`, typ, payload)
     return err
-})
+}); err != nil {
+    return err
+}
 
 // Orderly shutdown — Stop signals the worker, Wait blocks until it has
 // drained accepted ops.

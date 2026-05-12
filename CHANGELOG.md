@@ -15,7 +15,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - `Writer` — interface implemented by both `Queue` and `Direct`
     (`Submit(ctx, name, fn) error`, `Stats() Stats`).
   - `Options` — `QueueSize` (default 256), `MaxBatch` (default 32),
-    `BatchWindow` (default 2ms), `Retry` (zero = no retry).
+    `BatchWindow` (default 2ms), `Retry` (`*txutil.RetryOptions`; `nil`
+    disables retry — pass a non-nil pointer to opt in).
   - `Stats` — `Submitted`, `Completed`, `Failed`, `Batches`,
     `OpsInBatches`, `LastBatchSize`, `QueueDepth`. Safe to call
     concurrently.
