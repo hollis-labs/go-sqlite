@@ -1,5 +1,22 @@
 # go-sqlite
 
+## Maintenance moved to `github.com/hollis-labs/libs/util`
+
+This standalone repository is retired. Maintained source and documentation are
+in [github.com/hollis-labs/libs/util/sqlite](https://github.com/hollis-labs/libs/tree/util%2Fv0.1.0/util/sqlite), released in **`util/v0.1.0`**.
+Install the replacement module:
+
+```sh
+go get github.com/hollis-labs/libs/util@v0.1.0
+```
+
+Replace the `github.com/hollis-labs/go-sqlite` import prefix with
+`github.com/hollis-labs/libs/util/sqlite`, retaining the package subpath. Review the replacement documentation
+for any API changes before migrating. Existing standalone tags and history remain
+available; old module pins do not automatically redirect to the new module.
+
+The documentation below describes historical standalone usage.
+
 SQLite concurrency toolkit for Go apps that use `database/sql` with [`modernc.org/sqlite`](https://pkg.go.dev/modernc.org/sqlite). Solves the recurring failure mode:
 
 > "We enabled WAL and `busy_timeout`, but concurrent Go writers still hit `SQLITE_BUSY` / `SQLITE_LOCKED`."
